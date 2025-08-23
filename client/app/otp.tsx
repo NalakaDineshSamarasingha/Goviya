@@ -1,4 +1,4 @@
-import { useState, useRef, RefObject } from 'react';
+import { useState, useRef, RefObject, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,13 +6,21 @@ import {
   TouchableOpacity,
   StyleSheet,
   StatusBar,
-  SafeAreaView
+  SafeAreaView,
+  Alert,
+  ActivityIndicator
 } from 'react-native';
 import type { TextInput as RNTextInput } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+
+const API_BASE_URL = "http://localhost:9090"; // Change this to your server URL
 
 export default function OTPScreen() {
-  const [otp, setOtp] = useState<string[]>(['', '', '', '']);
-  // const { mobile } = useLocalSearchParams(); // Remove unused variable
+  const [otp, setOtp] = useState<string[]>(['', '', '', '', '', '']);
+  const [loading, setLoading] = useState(false);
+  const [resendLoading, setResendLoading] = useState(false);
+  const { mobile, formattedPhone } = useLocalSearchParams();
+  const router = useRouter();
   const inputRefs = useRef<Array<RefObject<RNTextInput> | null>>([]);
 
   const handleOtpChange = (value: string, index: number) => {
@@ -21,7 +29,7 @@ export default function OTPScreen() {
     setOtp(newOtp);
 
     // Auto focus next input
-    if (value && index < 3) {
+    if (value && index < 5) {
       (inputRefs.current[index + 1] as RefObject<RNTextInput>)?.current?.focus();
     }
 
@@ -31,12 +39,113 @@ export default function OTPScreen() {
     }
   };
 
-  const handleResendCode = () => {
-    // Handle resend logic here
-    console.log('Resending code...');
+  const verifyOtp = async () => {
+    const otpCode = otp.join('');
+    if (otpCode.length !== 6) {
+      Alert.alert("Invalid OTP", "Please enter a complete 6-digit code");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // First verify the OTP
+      const verifyResponse = await fetch(`${API_BASE_URL}/verifyOtp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phoneNumber: mobile,
+          otp: otpCode,
+          purpose: "login"
+        }),
+      });
+
+      const verifyData = await verifyResponse.json();
+
+      if (verifyData.success) {
+        // Check if user exists in the system
+        const checkUserResponse = await fetch(`${API_BASE_URL}/checkUser`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            phoneNumber: verifyData.data.phoneNumber
+          }),
+        });
+
+        const userData = await checkUserResponse.json();
+
+        if (userData.success && userData.data.exists) {
+          // User exists, redirect to home page
+          Alert.alert(
+            "Welcome Back!", 
+            "Login successful",
+            [
+              {
+                text: "OK",
+                onPress: () => router.replace("/(tabs)")
+              }
+            ]
+          );
+        } else {
+          // New user, redirect to registration page
+          router.push({ 
+            pathname: "/register", 
+            params: { 
+              phoneNumber: verifyData.data.phoneNumber 
+            } 
+          });
+        }
+      } else {
+        Alert.alert("Invalid OTP", verifyData.message || "Please check your code and try again");
+      }
+    } catch (error) {
+      console.error("Verify OTP Error:", error);
+      Alert.alert("Network Error", "Please check your internet connection and try again");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Remove unused handleVerify and isOtpComplete
+  const handleResendCode = async () => {
+    setResendLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/sendOtp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phoneNumber: mobile,
+          purpose: "login"
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        Alert.alert("Code Resent", "A new verification code has been sent to your mobile number");
+        setOtp(['', '', '', '', '', '']); // Clear current OTP
+      } else {
+        Alert.alert("Error", data.message || "Failed to resend OTP");
+      }
+    } catch (error) {
+      console.error("Resend OTP Error:", error);
+      Alert.alert("Network Error", "Please check your internet connection and try again");
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
+  // Auto verify when all digits are entered
+  useEffect(() => {
+    const otpCode = otp.join('');
+    if (otpCode.length === 6) {
+      verifyOtp();
+    }
+  }, [otp]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -48,8 +157,12 @@ export default function OTPScreen() {
       <View style={styles.content}>
         <View style={styles.messageContainer}>
           <Text style={styles.message}>
-            We have sent a 4 digit code via SMS to your number{' '}
-            <Text style={styles.changeNumber}>Change number</Text>
+            We have sent a 6 digit code via SMS to your number{' '}
+            <Text style={styles.phoneNumber}>{formattedPhone || `+94${mobile?.toString().substring(1)}`}</Text>
+            {'\n'}
+            <TouchableOpacity onPress={() => router.back()}>
+              <Text style={styles.changeNumber}>Change number</Text>
+            </TouchableOpacity>
           </Text>
         </View>
         <View style={styles.otpContainer}>
@@ -69,19 +182,34 @@ export default function OTPScreen() {
               maxLength={1}
               textAlign="center"
               selectionColor="#007AFF"
+              editable={!loading}
             />
           ))}
         </View>
+        
+        {loading && (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#ff8000" />
+            <Text style={styles.loadingText}>Verifying...</Text>
+          </View>
+        )}
+
         <TouchableOpacity 
-          style={styles.resendButton} 
+          style={[styles.resendButton, resendLoading && styles.buttonDisabled]} 
           onPress={handleResendCode}
+          disabled={resendLoading || loading}
         >
-          <Text style={styles.resendText}>Resend code</Text>
+          {resendLoading ? (
+            <ActivityIndicator color="#a0a0a0" />
+          ) : (
+            <Text style={styles.resendText}>Resend code</Text>
+          )}
         </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
 }
+
 
 const styles = StyleSheet.create({
   container: {
@@ -111,6 +239,10 @@ const styles = StyleSheet.create({
     color: '#bbb',
     marginBottom: 20,
   },
+  phoneNumber: {
+    color: '#fff',
+    fontWeight: '600',
+  },
   changeNumber: {
     color: '#007AFF',
     textDecorationLine: 'underline',
@@ -122,7 +254,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 0,
   },
   otpInput: {
-    width: 60,
+    width: 50,
     height: 60,
     backgroundColor: '#333',
     borderRadius: 8,
@@ -131,11 +263,20 @@ const styles = StyleSheet.create({
     color: '#fff',
     borderWidth: 1,
     borderColor: '#333',
-    marginHorizontal: 2,
+    marginHorizontal: 1,
   },
   otpInputFilled: {
     borderColor: '#ff8000',
     backgroundColor: '#333',
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  loadingText: {
+    color: '#bbb',
+    marginTop: 10,
+    fontSize: 16,
   },
   resendButton: {
     paddingVertical: 15,
@@ -144,6 +285,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#4a4a4a',
     alignSelf: 'flex-start',
+  },
+  buttonDisabled: {
+    opacity: 0.5,
   },
   resendText: {
     color: '#a0a0a0',
